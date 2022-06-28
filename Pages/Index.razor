@@ -1,0 +1,191 @@
+﻿@page "/"
+@using System.Globalization
+@using System.Reactive
+@using System.Reactive.Linq
+@using System.Timers
+
+
+<RadzenCard>
+    Proportional Gain:
+    <RadzenNumeric TItem="double" Placeholder="Enter Proportional Gain" @bind-Value=@p />
+    Integral Gain:
+    <RadzenNumeric TItem="double" Placeholder="Enter Integral Gain" @bind-Value=@i />
+    Derivative Gain:
+    <RadzenNumeric TItem="double" Placeholder="Enter Derivative Gain" @bind-Value=@d />
+    Set Point:
+    <RadzenNumeric TItem="double" Placeholder="Enter Set Point" @bind-Value=@setpoint />
+    <RadzenButton Click="@SetPIDTerms" >Set PID Control Terms!</RadzenButton>
+</RadzenCard>
+<RadzenChart>
+    <RadzenLineSeries Smooth="true" Data="@pidTimeSeries" ValueProperty="Output" CategoryProperty="TimeStep" />
+
+    <RadzenValueAxis Min="0.0" Max="10000" Step="1000" >
+      <RadzenAxisTitle Text="Revenue" />
+    </RadzenValueAxis>
+
+    <RadzenCategoryAxis>
+      <RadzenAxisTitle Text="Time Step" />
+    </RadzenCategoryAxis>
+
+    <RadzenLineSeries Smooth="true" Data="@pidTimeSeries" ValueProperty="SetPoint" CategoryProperty="TimeStep" />
+
+</RadzenChart>
+<RadzenButton Click=@(args => StartLoop())>Start Update Loop</RadzenButton>
+<RadzenButton Click=@(args => StopLoop())>Stop Update Loop</RadzenButton>
+
+@code {
+    class PIDTimeStep
+    {
+        public double SetPoint { get; set; } = 0.0;
+        public double Error { get; set; }
+        public double Output { get; set; }
+        public int TimeStep { get; set; }
+    }
+
+    class Plant
+    {
+        private double min { get; set; }
+        private double max { get; set; }
+        public double lastOutput { get; set; } = 0.0;
+
+        private PID plantPID = new PID(.025, 1e-9, 0.1, 0.0, 255.0);
+        public Plant(double Min, double Max)
+        {
+            this.min = Min;
+            this.max = Max;
+        }
+
+        public double Update(double Input)
+        {
+            if (Input > 255.0)
+                Input = 255.0;
+            else if (Input < 0.0)
+                Input = 0.0;
+
+            double desiredOutput = Input * this.max / 255.0;
+            double deltaOutput = desiredOutput - this.lastOutput;
+            double output = this.lastOutput + this.plantPID.Update(deltaOutput);
+            this.lastOutput = output;
+            return output;
+        }
+    }
+
+    class PID
+    {
+        private double p { get; set; }
+        private double i { get; set; }
+        private double d { get; set; }
+        private double minOut { get; set; }
+        private double maxOut { get; set; }
+        private double integral { get; set; } = 0.0;
+        private double previousError { get; set; } = 0.0;
+
+        public PID(double P, double I, double D, double MinOut, double MaxOut)
+        {
+            this.p = P;
+            this.i = I;
+            this.d = D;
+            this.minOut = MinOut;
+            this.maxOut = MaxOut;
+        }
+
+        public void SetP(double P)
+        {
+            this.p = P;
+        }
+
+        public void SetI(double I)
+        {
+            this.i = I;
+        }
+
+        public void SetD(double D)
+        {
+            this.d = D;
+        }
+
+        public double Update(double error)
+        {
+            double p_term = error * p;
+
+            integral += error;
+            double i_term = integral * i;
+
+            double d_term = (error - previousError) * d;
+
+            previousError = error;
+
+            return (p_term + i_term + d_term);
+        }
+
+        public void ResetIntegral()
+        {
+            this.integral = 0.0;
+        }
+    }
+
+    List<PIDTimeStep> pidTimeSeries { get; set; } = new List<PIDTimeStep>();
+    PID processPID = new PID(0.0, 0.0, 0.0, 0.0, 255.0);
+    Plant plant = new Plant(0.0, 9000.0);
+
+    double p = 1.0;
+    double i = 0.1;
+    double d = 0.1;
+    double setpoint = 800.0;
+    public async void SetPIDTerms()
+    {
+        processPID.SetP(p);
+        processPID.SetI(i);
+        processPID.SetD(d);
+        processPID.ResetIntegral();
+    }
+
+    private double input = 0.0;
+
+    private bool continueUpdateLoop = false;
+    private IObservable<long> Timer;
+    private IDisposable TimerSub;
+    public void StartLoop()
+    {
+        PIDTimeStep firstEntry =
+        new PIDTimeStep() { Error = 0.0, Output = 0.0, TimeStep = 0 };
+        pidTimeSeries.Add(firstEntry);
+
+        if (this.Timer == null)
+        {
+            this.Timer = Observable.Timer(TimeSpan.FromMilliseconds(0), TimeSpan.FromMilliseconds(100));
+        }
+        else
+        {
+            // NO-OP.
+        }
+
+        if (this.TimerSub == null)
+        {
+            this.TimerSub = this.Timer.Subscribe(x => InvokeAsync(() => 
+            {
+                PIDTimeStep tempPIDItem = new PIDTimeStep();
+                tempPIDItem.SetPoint = setpoint;
+                tempPIDItem.Error = setpoint - plant.lastOutput;
+                double plantInput = processPID.Update(tempPIDItem.Error);
+                tempPIDItem.Output = plant.Update(plantInput);
+                tempPIDItem.TimeStep = pidTimeSeries.Last().TimeStep + 1;
+                pidTimeSeries.Add(tempPIDItem);
+                StateHasChanged();
+                Console.WriteLine("Looping");
+            }));
+        }
+        else
+        {
+            // NO-OP.
+        }
+    }
+
+    public async void StopLoop()
+    {
+        this.TimerSub?.Dispose();
+        this.TimerSub = null;
+        this.pidTimeSeries.Clear();
+        this.processPID.ResetIntegral();
+    }
+}
