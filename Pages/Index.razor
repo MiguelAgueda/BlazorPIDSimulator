@@ -3,6 +3,7 @@
 @using System.Reactive
 @using System.Reactive.Linq
 @using System.Timers
+@using Components
 
 
 <RadzenCard>
@@ -42,91 +43,17 @@
         public int TimeStep { get; set; }
     }
 
-    class Plant
-    {
-        private double min { get; set; }
-        private double max { get; set; }
-        public double lastOutput { get; set; } = 0.0;
 
-        private PID plantPID = new PID(.025, 1e-9, 0.1, 0.0, 255.0);
-        public Plant(double Min, double Max)
-        {
-            this.min = Min;
-            this.max = Max;
-        }
 
-        public double Update(double Input)
-        {
-            if (Input > 255.0)
-                Input = 255.0;
-            else if (Input < 0.0)
-                Input = 0.0;
 
-            double desiredOutput = Input * this.max / 255.0;
-            double deltaOutput = desiredOutput - this.lastOutput;
-            double output = this.lastOutput + this.plantPID.Update(deltaOutput);
-            this.lastOutput = output;
-            return output;
-        }
-    }
 
-    class PID
-    {
-        private double p { get; set; }
-        private double i { get; set; }
-        private double d { get; set; }
-        private double minOut { get; set; }
-        private double maxOut { get; set; }
-        private double integral { get; set; } = 0.0;
-        private double previousError { get; set; } = 0.0;
-
-        public PID(double P, double I, double D, double MinOut, double MaxOut)
-        {
-            this.p = P;
-            this.i = I;
-            this.d = D;
-            this.minOut = MinOut;
-            this.maxOut = MaxOut;
-        }
-
-        public void SetP(double P)
-        {
-            this.p = P;
-        }
-
-        public void SetI(double I)
-        {
-            this.i = I;
-        }
-
-        public void SetD(double D)
-        {
-            this.d = D;
-        }
-
-        public double Update(double error)
-        {
-            double p_term = error * p;
-
-            integral += error;
-            double i_term = integral * i;
-
-            double d_term = (error - previousError) * d;
-
-            previousError = error;
-
-            return (p_term + i_term + d_term);
-        }
-
-        public void ResetIntegral()
-        {
-            this.integral = 0.0;
-        }
-    }
-
-    List<PIDTimeStep> pidTimeSeries { get; set; } = new List<PIDTimeStep>();
-    PID processPID = new PID(0.0, 0.0, 0.0, 0.0, 255.0);
-    Plant plant = new Plant(0.0, 9000.0);
+    public int chartYMin = -5000;
+    public int chartYMax = 5000;
+    public int chartYStep = 1000;
+    Queue<PIDTimeStep> pidTimeSeries { get; set; } = new Queue<PIDTimeStep>();
+    
+    Components.PID processPID = new Components.PID(0.0, 0.0, 0.0, 0.0, 255.0);
+    Components.Plant plant = new Components.Plant(0.0, 9000.0);
 
     double p = 1.0;
     double i = 0.1;
@@ -141,16 +68,11 @@
     }
 
     private double input = 0.0;
-
     private bool continueUpdateLoop = false;
     private IObservable<long> Timer;
     private IDisposable TimerSub;
-    public void StartLoop()
+    public async Task StartLoop()
     {
-        PIDTimeStep firstEntry =
-        new PIDTimeStep() { Error = 0.0, Output = 0.0, TimeStep = 0 };
-        pidTimeSeries.Add(firstEntry);
-
         if (this.Timer == null)
         {
             this.Timer = Observable.Timer(TimeSpan.FromMilliseconds(0), TimeSpan.FromMilliseconds(100));
@@ -162,6 +84,10 @@
 
         if (this.TimerSub == null)
         {
+            PIDTimeStep firstEntry =
+            new PIDTimeStep() { Error = 0.0, Output = 0.0, TimeStep = 1000 };
+            pidTimeSeries.Enqueue(firstEntry);
+
             this.TimerSub = this.Timer.Subscribe(x => InvokeAsync(() => 
             {
                 PIDTimeStep tempPIDItem = new PIDTimeStep();
@@ -170,9 +96,12 @@
                 double plantInput = processPID.Update(tempPIDItem.Error);
                 tempPIDItem.Output = plant.Update(plantInput);
                 tempPIDItem.TimeStep = pidTimeSeries.Last().TimeStep + 1;
-                pidTimeSeries.Add(tempPIDItem);
+                pidTimeSeries.Enqueue(tempPIDItem);
+                /* The follow if-body, when hit, stops the chart from updating. 
+                 */
+                if (pidTimeSeries.Count() > 30)
+                    pidTimeSeries.Dequeue(); 
                 StateHasChanged();
-                Console.WriteLine("Looping");
             }));
         }
         else
