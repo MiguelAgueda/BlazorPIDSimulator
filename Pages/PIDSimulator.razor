@@ -15,9 +15,9 @@
     <RadzenButton Click="@SetPIDTerms" >Set PID Control Terms!</RadzenButton>
 </RadzenCard>
 <RadzenChart>
-    <RadzenLineSeries Smooth="true" Data="@pidTimeSeries" ValueProperty="Output" CategoryProperty="TimeStep" />
+    <RadzenLineSeries Smooth="true" Data="@PIDTimeSeries" ValueProperty="Output" CategoryProperty="TimeStep" />
 
-    <RadzenValueAxis Min="0.0" Max="10000" Step="1000" >
+    <RadzenValueAxis Min="@chartYMin" Max="@chartYMax" Step="@chartYStep" >
       <RadzenAxisTitle Text="Revenue" />
     </RadzenValueAxis>
 
@@ -25,7 +25,7 @@
       <RadzenAxisTitle Text="Time Step" />
     </RadzenCategoryAxis>
 
-    <RadzenLineSeries Smooth="true" Data="@pidTimeSeries" ValueProperty="SetPoint" CategoryProperty="TimeStep" />
+    <RadzenLineSeries Smooth="true" Data="@PIDTimeSeries" ValueProperty="SetPoint" CategoryProperty="TimeStep" />
 
 </RadzenChart>
 <RadzenButton Click=@(args => StartLoop())>Start Update Loop</RadzenButton>
@@ -47,7 +47,25 @@
     public int chartYMin = -5000;
     public int chartYMax = 5000;
     public int chartYStep = 1000;
-    Queue<PIDTimeStep> pidTimeSeries { get; set; } = new Queue<PIDTimeStep>();
+    private readonly object pidTimeSeriesLock = new object();
+    private Queue<PIDTimeStep> pidTimeSeries { get; set; } = new Queue<PIDTimeStep>();
+    Queue<PIDTimeStep> PIDTimeSeries 
+    {
+        get
+        {
+            lock(pidTimeSeriesLock)
+            {
+                return pidTimeSeries;
+            }
+        }
+        set
+        {
+            lock(pidTimeSeriesLock)
+            {
+                pidTimeSeries = value;
+            }
+        }
+    }
     
     Components.PID processPID = new Components.PID(0.0, 0.0, 0.0, 0.0, 255.0);
     Components.Plant plant = new Components.Plant(0.0, 9000.0);
@@ -56,7 +74,7 @@
     double i = 0.1;
     double d = 0.1;
     double setpoint = 800.0;
-    public async void SetPIDTerms()
+    public void SetPIDTerms()
     {
         processPID.SetP(p);
         processPID.SetI(i);
@@ -64,11 +82,9 @@
         processPID.ResetIntegral();
     }
 
-    private double input = 0.0;
-    private bool continueUpdateLoop = false;
-    private IObservable<long> Timer;
-    private IDisposable TimerSub;
-    public async Task StartLoop()
+    private IObservable<long>? Timer;
+    private IDisposable? TimerSub;
+    public void StartLoop()
     {
         if (this.Timer == null)
         {
@@ -83,23 +99,25 @@
         {
             PIDTimeStep firstEntry =
             new PIDTimeStep() { Error = 0.0, Output = 0.0, TimeStep = 1000 };
-            pidTimeSeries.Enqueue(firstEntry);
+            PIDTimeSeries.Enqueue(firstEntry);
 
-            this.TimerSub = this.Timer.Subscribe(x => InvokeAsync(() => 
+            this.TimerSub = this.Timer.Subscribe(async x => 
             {
                 PIDTimeStep tempPIDItem = new PIDTimeStep();
                 tempPIDItem.SetPoint = setpoint;
                 tempPIDItem.Error = setpoint - plant.lastOutput;
                 double plantInput = processPID.Update(tempPIDItem.Error);
                 tempPIDItem.Output = plant.Update(plantInput);
-                tempPIDItem.TimeStep = pidTimeSeries.Last().TimeStep + 1;
-                pidTimeSeries.Enqueue(tempPIDItem);
+                tempPIDItem.TimeStep = PIDTimeSeries.Last().TimeStep + 1;
+                PIDTimeSeries.Enqueue(tempPIDItem);
                 /* The follow if-body, when hit, stops the chart from updating. 
                  */
-                if (pidTimeSeries.Count() > 30)
-                    pidTimeSeries.Dequeue(); 
-                StateHasChanged();
-            }));
+                while (PIDTimeSeries.Count() > 3)
+                {
+                        _ = pidTimeSeries.Dequeue(); 
+                }
+                await InvokeAsync(StateHasChanged);
+            });
         }
         else
         {
@@ -107,11 +125,11 @@
         }
     }
 
-    public async void StopLoop()
+    public void StopLoop()
     {
         this.TimerSub?.Dispose();
         this.TimerSub = null;
-        this.pidTimeSeries.Clear();
+        this.PIDTimeSeries.Clear();
         this.processPID.ResetIntegral();
     }
 }
